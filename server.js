@@ -1,8 +1,8 @@
 // 1. IMPORTS
-const express = require('express');   // The web framework
-const mongoose = require('mongoose'); // The database tool
-const cors = require('cors');         // Allows browser requests from other domains
-require('dotenv').config();            // Load variables from .env file
+const express = require('express');   
+const mongoose = require('mongoose'); 
+const cors = require('cors');        
+require('dotenv').config();       
 
 // 2. CONFIGURATION
 const app = express();
