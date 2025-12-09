@@ -1,106 +1,133 @@
 // 1. IMPORTS
-const express = require('express');   
-const mongoose = require('mongoose'); 
-const cors = require('cors');        
-require('dotenv').config();       
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const jwt = require('jsonwebtoken'); // UUSI: Tokeneille
+const bcrypt = require('bcryptjs');  // UUSI: Salasanoille
+require('dotenv').config();
 
 // 2. CONFIGURATION
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SECRET_KEY = process.env.JWT_SECRET || "salainenavain123"; // Oikeassa projektissa tämä .env tiedostoon!
 
 // 3. MIDDLEWARE
-app.use(cors());             // Enable Cross-Origin Resource Sharing
-app.use(express.json());     // Allow server to read JSON data in POST requests
+app.use(cors());
+app.use(express.json());
 
 // 4. DATABASE CONNECTION
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('DB Connection Error:', err));
 
-  // 5. SCHEMA DEFINITION
-const snippetSchema = new mongoose.Schema({
-  title: { 
-    type: String, 
-    required: true // Title is mandatory
-  },
-  language: { 
-    type: String, 
-    required: true, 
-    lowercase: true // Stores 'JavaScript' as 'javascript' for easier searching
-  },
-  code: { 
-    type: String, 
-    required: true 
-  },
-  description: String,   // Optional field
-  tags: [String],        // An array of strings, e.g., ['web', 'db']
-  created_at: { 
-    type: Date, 
-    default: Date.now // Automatically sets current date
-  }
-});
+// ==========================================
+// 5. SCHEMAS (TIETOKANTAMALLIT)
+// ==========================================
 
-// Create the Model
+// A) USER SCHEMA (Tämä puuttui!)
+const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true }
+});
+const User = mongoose.model('User', userSchema);
+
+// B) SNIPPET / ITEM SCHEMA
+// React frontend kutsuu näitä "items", joten pidetään rakenne joustavana
+const snippetSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  code: { type: String, required: false }, // Ei pakollinen jotta dashboard toimii helpommin
+  user_id: { type: String } // Voidaan tallentaa kuka loi itemin
+});
 const Snippet = mongoose.model('Snippet', snippetSchema);
 
+
+// ==========================================
 // 6. ROUTES
+// ==========================================
 
 // TEST ROUTE
-app.get('/', (req, res) => {
-  res.send('Snippet API is running!');
-});
+app.get('/', (req, res) => res.send('API is running!'));
 
-// GET ALL SNIPPETS (with Filtering and Limits)
-// Example call: GET /api/snippets?lang=javascript&limit=5
-app.get('/api/snippets', async (req, res) => {
+// --- AUTH ROUTES (LOGIN & REGISTER) ---
+
+// REGISTER
+app.post('/api/register', async (req, res) => {
   try {
-    // 1. Check if user provided a 'lang' query parameter
-    const filter = {};
-    if (req.query.lang) {
-      filter.language = req.query.lang.toLowerCase();
-    }
+    const { email, password } = req.body;
+    // Tarkista onko käyttäjä jo olemassa
+    const existingUser = await User.findOne({ email });
+    if (existingUser) return res.status(400).json({ message: "Email already exists" });
 
-    // 2. Check if user provided a limit (default to 10)
-    const limit = parseInt(req.query.limit) || 10;
+    // Salaa salasana
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 3. Find snippets matching the filter, sort by newest, and limit results
-    const snippets = await Snippet.find(filter)
-      .sort({ created_at: -1 }) // -1 means descending order (newest first)
-      .limit(limit);
+    // Luo käyttäjä
+    const newUser = new User({ email, password: hashedPassword });
+    await newUser.save();
 
-    res.json(snippets);
+    res.status(201).json({ message: "User created" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// CREATE NEW SNIPPET
-app.post('/api/snippets', async (req, res) => {
+// LOGIN
+app.post('/api/login', async (req, res) => {
   try {
-    // Create a new snippet using data from the request body
-    const newSnippet = new Snippet(req.body);
-    // Save it to the database
-    const savedSnippet = await newSnippet.save();
-    // Return the saved object with 201 Created status
-    res.status(201).json(savedSnippet);
+    const { email, password } = req.body;
+    
+    // Etsi käyttäjä
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+
+    // Tarkista salasana
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
+
+    // Luo token
+    const token = jwt.sign({ id: user._id }, SECRET_KEY, { expiresIn: "1h" });
+
+    res.json({ token, user: { email: user.email, id: user._id } });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// --- DATA ROUTES ---
+
+// HUOM: Frontendisi App.jsx käyttää osoitetta "/api/items" Dashboardissa.
+// Laitetaan reitti kuuntelemaan sitä.
+app.get('/api/items', async (req, res) => {
+  try {
+    const items = await Snippet.find();
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post('/api/items', async (req, res) => {
+  try {
+    // Frontend lähettää { title: "..." }
+    const newItem = new Snippet(req.body);
+    await newItem.save();
+    res.status(201).json(newItem);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
 });
 
-// GET ONE SNIPPET BY ID
-app.get('/api/snippets/:id', async (req, res) => {
+app.delete('/api/items/:id', async (req, res) => {
   try {
-    const snippet = await Snippet.findById(req.params.id);
-    if (!snippet) return res.status(404).json({ message: 'Not found' });
-    res.json(snippet);
+    await Snippet.findByIdAndDelete(req.params.id);
+    res.json({ message: "Deleted" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
+
 // 7. START SERVER
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
